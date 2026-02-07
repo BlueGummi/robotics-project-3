@@ -13,6 +13,9 @@
 #
 # CODE - Implementation
 #
+#        Throughout CODE, init code will be sprinkled around to initialize and declare global variables.
+#        HOWEVER, no actual code will run until the very end of the section.
+#
 
 #
 #
@@ -29,8 +32,8 @@
 #
 
 # IMPORTANT NOTES
-# Global variables with `internal` in their name should NOT
-# be modified. Only modify global variables prefixed with `CONFIG_`.
+# Global variables with `_` prefixed in their name should NOT
+# be modified from other systems. Only modify global variables prefixed with `CONFIG_`.
 #
 #
 #
@@ -47,6 +50,10 @@
 # `robo_assert` takes in an asserted statement, panic reason, and message, in that order
 #
 # panic reasons are defined in `class PanicReason`
+#
+# Printing to the console is done through `print_message`. All `log_` functionality is purely for the logging system
+#
+#
 #
 #
 #
@@ -103,7 +110,6 @@
 #
 #
 
-import inspect
 import sys
 import heapq
 from typing import Dict, Optional, List, Tuple, Callable  # we have type safety at home
@@ -143,12 +149,13 @@ CONST_WEIGHT_UNTRAVERESABLE = -1
 CONFIG_DEBUG: bool = (
     True  # Defines if we are in a debug build. More logging functionality will be enabled if we are, but this
 )
+
 # May come at the cost of slowing down the program due to the instrumentation.
 
 CONFIG_MAP_WIDTH: int = 7  # Map width in units.
 CONFIG_MAP_HEIGHT: int = 7  # Map height in units.
 
-CONFIG_MAP_TILE_WIDTH_INCHES: int = 12
+CONFIG_MAP_TILE_WIDTH_INCHES: int = 12  # TODO: measure these
 CONFIG_MAP_TILE_HEIGHT_INCHES: int = 12
 
 # TODO: Figure out what the robot's memory usage limitations are
@@ -237,40 +244,52 @@ class PanicCallback:
         self.fn = fn
 
 
-panic_callbacks_internal: list[PanicCallback] = []
+_panic_callbacks: list[PanicCallback] = []
+
+# Init stage
+_init_stage = InitStage.INIT_CODE
 
 
-def log(msg: str = ""):
+def init_advance(stage: InitStage):
+    global _init_stage
+    _init_stage = stage
+
+
+def get_time() -> int:
+    return 0  # TODO
+
+
+def print_message(msg: str = ""):
     print(msg)
 
 
 # This will terminate the program, it is UNSAFE to call from arbitrary points, and should only be invoked
 # from within `panic` unless something truly awful has happened and we cannot recover anything (unlikely)
 def halt_and_catch_fire():
-    pass  # TODO: shutdown
+    pass  # TODO: shutdown, lol
 
 
 def panic(reason: str):
-    log(f'panic "{reason}"')
+    print_message(f'panic "{reason}"')
 
     callbacks = sorted(
-        panic_callbacks_internal,
+        _panic_callbacks,
         key=lambda c: (c.phase, -c.priority),
     )
 
     for cb in callbacks:
         try:
             if CONFIG_DEBUG:
-                log(f"panic: {cb.phase.name}:{cb.name}")
+                print_message(f"panic: {cb.phase.name}:{cb.name}")
             cb.fn()
         except Exception as e:
-            log(f"panic callback {cb.name} failed: {e}")
+            print_message(f"panic callback {cb.name} failed: {e}")
 
     halt_and_catch_fire()
 
 
 def panic_callback_register(cb: PanicCallback):
-    panic_callbacks_internal.append(cb)
+    _panic_callbacks.append(cb)
 
 
 # USE THIS to assert conditions
@@ -281,7 +300,7 @@ def robo_assert(condition: bool, reason: PanicReason, msg: str = ""):
     panic(f"{reason.name}: {msg}")
 
 
-# this only exists in case something goes VERY VERY WRONG TODO
+# this only exists in case something goes VERY VERY WRONG TODO implement
 def global_exception_handler(exc_type, exc, tb):
     pass
 
@@ -294,11 +313,15 @@ sys.excepthook = global_exception_handler
 #
 #
 
-# Types
-Coord = Tuple[int, int]
-TileWeight = int
 
-# These are our "helper" functions and logging niceties
+# Types
+Coord = Tuple[int, int]  # x, y
+TileWeight = int
+Direction = Tuple[int, int]
+NORTH: Direction = (0, 1)
+SOUTH: Direction = (0, -1)
+EAST: Direction = (1, 0)
+WEST: Direction = (-1, 0)
 
 
 class LogType(IntEnum):
@@ -312,6 +335,14 @@ class Log:
     def __init__(self, log_type: LogType, message: str = ""):
         self.log_type = log_type
         self.message = message
+        self.time = get_time()
+
+
+_logs: List[Log] = []
+
+
+def log_event(log_type: LogType, message: str = ""):
+    _logs.append(Log(log_type, message))
 
 
 # A "Tile" structure, this has a weight, which we define with __slots__
@@ -359,10 +390,10 @@ class GridMap:
     def neighbors(self, coord: Coord) -> List[Coord]:
         x, y = coord
         candidates = [
-            (x + 1, y),
-            (x - 1, y),
-            (x, y + 1),
-            (x, y - 1),
+            (x + 1, y),  # eastern one
+            (x - 1, y),  # western one
+            (x, y + 1),  # northern one
+            (x, y - 1),  # southern one
         ]
 
         result: List[Coord] = []
@@ -382,9 +413,11 @@ class Path:
         )
         self.points: List[Coord] = points
 
+    @property
     def start(self) -> Coord:
         return self.points[0]
 
+    @property
     def end(self) -> Coord:
         return self.points[-1]
 
@@ -407,9 +440,9 @@ class Robot:
 
     def follow_path(self, path: Path):
         robo_assert(
-            path.start() == self.position,
+            path.start == self.position,
             PanicReason.PANIC_PATH_INVALID,
-            f"path start {path.start()} does not match robot position {self.position}",
+            f"path start {path.start} does not match robot position {self.position}",
         )
 
         for next_coord in path.points[1:]:
@@ -438,8 +471,9 @@ def reconstruct_path(came_from: dict[Coord, Coord], current: Coord) -> List[Coor
     return path
 
 
+# manhattan distance as we restrict ourselves to horizontal and vertical
 def heuristic(a: Coord, b: Coord) -> int:
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+    return abs(a[0] - b[0]) + abs(a[1] - b[1]) # imagine having an algorithm named after your bad urban planning
 
 
 def build_map_from_config() -> GridMap:
@@ -460,35 +494,95 @@ def build_map_from_config() -> GridMap:
     return grid
 
 
-def astar(grid: GridMap, start: Coord, goal: Coord) -> Optional[Path]:
+# We're using an A* algorithm here to pathfind, however we have very strong bias
+# towards avoiding turning and prefer direct straight lines for error minimization
+
+# As an effect of this, this algorithm often behaves identically to a much simpler, more
+# naive "drive forward to the right row, turn right, drive to right column", especially
+# on smaller (e.g. 6x6) maps that have smaller turn costs.
+
+# However, we will preserve the use of A* in case we want to experiment with treating
+# smaller units as "tiles" (e.g. one virtual tile is not a physical tile on the ground)
+
+
+# This algorithm can also be unbiased to test different degrees of turn costs to time efficiency
+def astar_with_directions(
+    grid: GridMap,
+    start: Coord,
+    goal: Coord,
+    turn_cost: int = 5,
+    start_dir: Optional[Direction] = None,
+    goal_dir: Optional[Direction] = None,
+) -> Optional[Path]:
     robo_assert(
         grid.in_bounds(start) and grid.in_bounds(goal),
         PanicReason.PANIC_COORD_INVALID,
-        "start or end goal out of bounds",
+        "start or goal out of bounds",
     )
+
+    if not grid.tile(goal).traversable:
+        grid.tile(goal).weight = (
+            0  # NOTE: We will allow going to untraversable locations because houses are
+            # untraversable along the way but can be a destination
+        )
 
     if not grid.tile(start).traversable or not grid.tile(goal).traversable:
         return None
 
+    # (f_score, Coord)
     open_heap: List[Tuple[int, Coord]] = []
     heapq.heappush(open_heap, (0, start))
 
-    came_from: Dict[Coord, Coord] = {}
-    g_score: Dict[Coord, int] = {start: 0}
+    # path reconstruction
+    came_from: Dict[Coord, Coord] = {} # What tile did we come from?
+    came_from_dir: Dict[Coord, Direction] = (
+        {}
+    )  # directions we came from to reach this node
+    
+    if start_dir is not None:
+        came_from_dir[start] = start_dir # set our starting direction if one exists
+
+    g_score: Dict[Coord, int] = {start: 0} # Cost to get to the current node
+
+    def get_direction(a: Coord, b: Coord) -> Direction:
+        return (b[0] - a[0], b[1] - a[1])
 
     while open_heap:
-        _, current = heapq.heappop(open_heap)
+        _, current = heapq.heappop(open_heap) # `current` is tile with lowest estimated cost
 
         if current == goal:
-            return Path(reconstruct_path(came_from, current))
+            path = Path(reconstruct_path(came_from, current))
 
+            if goal_dir is not None and len(path.points) >= 2:
+                final_dir = get_direction(path.points[-2], path.points[-1])
+                robo_assert(
+                    final_dir == goal_dir,
+                    PanicReason.PANIC_PATH_INVALID,
+                    "goal orientation unsatisfiable", # face the required direction
+                )
+
+            return path
+
+        # check N, S, E, W neighbors from us
         for neighbor in grid.neighbors(current):
             tentative_g = g_score[current] + grid.tile(neighbor).cost
+            move_dir = get_direction(current, neighbor)
+        
+            prev_dir = came_from_dir.get(current)
 
+            # this would require a turn, so we bias it away
+            if prev_dir is not None and move_dir != prev_dir:
+                tentative_g += turn_cost
+        
+            # if this neighbor is unvisited OR if we have found a cheaper path than before,
+            # update things and continue from the big outer loop
             if neighbor not in g_score or tentative_g < g_score[neighbor]:
                 came_from[neighbor] = current
+                came_from_dir[neighbor] = move_dir
                 g_score[neighbor] = tentative_g
-                f_score = tentative_g + heuristic(neighbor, goal)
+                f_score = tentative_g + heuristic(neighbor, goal) # heuristic is estimated cost from here to goal
                 heapq.heappush(open_heap, (f_score, neighbor))
+        
 
+    robo_assert(False, PanicReason.PANIC_PATH_INVALID, "no path found")
     return None
