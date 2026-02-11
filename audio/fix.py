@@ -5,7 +5,7 @@ import wave
 from pathlib import Path
 
 input_folder = Path(".")
-output_folder = Path("clean_wavs")
+output_folder = Path(".")
 output_folder.mkdir(exist_ok=True)
 
 for wav_file in input_folder.glob("*.wav"):

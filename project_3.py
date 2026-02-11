@@ -8,10 +8,10 @@ brain = Brain()
 
 # Robot configuration code
 brain_inertial = Inertial()
-controller = Controller()
-left_drive_smart = Motor(Ports.PORT3, False)
-right_drive_smart = Motor(Ports.PORT8, True)
+left_drive_smart = Motor(Ports.PORT4, False)
+right_drive_smart = Motor(Ports.PORT9, True)
 drivetrain = SmartDrive(left_drive_smart, right_drive_smart, brain_inertial, 319.19, 320, 40, MM, 1)
+controller = Controller()
 
 
 # Wait for sensor(s) to fully initialize
@@ -152,8 +152,7 @@ calibrate_drivetrain()
 # 
 # The robot starts powered off. After powering on, it needs to be calibrated. As the voice says, press "B" to calibrate
 # it. This will reset sensors and motors to their initial states, and the robot's internal heading to North and position
-# to "0,0". Once this is done, the robot will enter a menu. Navigating through this menu will allow you to find your
-# designated destination.
+# to "0,0". Then, it will follow a predefined path and turn accordingly
 #
 # CONTROL NOTES:
 # 
@@ -177,6 +176,15 @@ calibrate_drivetrain()
 #
 #
 
+# TODO: Figure out what the robot's memory usage limitations are
+
+# These two variables exist to limit the size of the map.
+# The limits exist because internally we construct a large 2D array of `Tile`s to represent the map.
+# Computers have limited memory, so eventually it will OOM (out of memory),
+# and these just exist to make sure we can safely exit before that happens
+CONST_MAX_WIDTH = 128
+CONST_MAX_HEIGHT = 128
+# ESP32 based, 520KB SRAM, Brain Main Memory is 320KB Heap
 
 CONST_WEIGHT_UNTRAVERESABLE = -1
 
@@ -194,18 +202,73 @@ CONST_WEIGHT_UNTRAVERESABLE = -1
 #
 #
 
+# --------------- DEBUG/RELEASE ---------------
+
 CONFIG_DEBUG = (
     True  # Defines if we are in a debug build. More logging functionality will be enabled if we are, but this
 )         # may come at the cost of slowing down the program due to the instrumentation
 
-CONFIG_SPIN_LATENCY_MS = 5 # Spinning/waiting in a loop - how long should we wait each iteration?
+# --------------- CUSTOM VARS ---------------
+CONFIG_DIST_TO_HOUSE_FROM_CORNER = 18 # inches
 
-CONFIG_AUDIO_DIR = "" # only if the audio on the microSD is under some directory
-CONFIG_MAP_WIDTH = 7  # Map width in units.
-CONFIG_MAP_HEIGHT = 7  # Map height in units.
+# --------------- MAP ---------------
 
-CONFIG_MAP_TILE_WIDTH_INCHES = 24
-CONFIG_MAP_TILE_HEIGHT_INCHES = 24
+CONFIG_MAP_WIDTH = 24 # Map width in "tiles".
+CONFIG_MAP_HEIGHT = 24  # Map height in "tiles".
+CONFIG_NOP_MOVES = True # Whether or not moves should be signaled to the robot.
+                        # Useful if testing robot without motors. NOTE: please
+                        # remember to refactor drivetrain commands into 
+                        # a wrapper function to avoid scattering checks of this everywhere!
+
+CONFIG_MAP_TILE_SIDE_INCHES = 6
+
+# This is an array of arrays of (weight, x, y). We parse this one time at init to label the obstacles on our map.
+CONFIG_MAP_OBSTACLES = [
+    [CONST_WEIGHT_UNTRAVERESABLE, 11, 5],
+    [CONST_WEIGHT_UNTRAVERESABLE, 7, 23],
+    [CONST_WEIGHT_UNTRAVERESABLE, 13, 13],
+    [CONST_WEIGHT_UNTRAVERESABLE, 23, 9],
+]  # Houses A, B, C, and D respectively
+
+# NOTE: if a LOCATION is in the "obstacles" list as UNTRAVERSABLE, the
+# robot will still allow traversal to the location if AND ONLY IF it is
+# set as a destination in the CONFIG_ROUTE variable.
+
+# The way we represent LOCATIONs is we first state its initial target, and
+# then its final move to orient at the house. This is because houses are 
+# faced angled in certain directions, and must be reached by first
+# going to a location, then turning, and driving forward a bit.
+
+# This array is thus a series of
+# [location_name: str, location_sound: str, initial_x: int
+# initial_y: int, final_orientation: float, final_traversal: float]
+
+# When we traverse locations, we first traverse with A* to the initial_x/y,
+# and then we orient the robot to final_orientation, travel for final_traversal,
+# before turning back around to return to initial_x/y, and continuing
+
+# All final_orientations are ABSOLUTE, where 0.0 is NORTH
+CONFIG_MAP_LOCATIONS = [
+    ["House A", "house_a.wav", 8, 8, 135, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
+    ["House B", "house_b.wav", 4, 20, 45, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
+    ["House C", "house_c.wav", 16, 16, 225, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
+    ["House D", "house_d.wav", 20, 12, 135, CONFIG_DIST_TO_HOUSE_FROM_CORNER]
+]
+
+# --------------- ROUTE ---------------
+
+CONFIG_ROUTE = [ # A route from start to finish, all route locations MUST be in CONFIG_MAP_LOCATIONS
+    "House A",
+    "House B",
+    "House C",
+    "House D",
+]
+
+# --------------- ROBOT INIT STATE ---------------
+
+CONFIG_ROBOT_START_POS = (2, 2) # Tuple to indicate software-perceived start pos
+CONFIG_ROBOT_START_ORIENTATION = 0.0 # direction robot is facing at start,
+                                     # "0.0" is "north"
 
 # definition:
 #    LOG_TRACE = 0  # Trace events
@@ -214,45 +277,29 @@ CONFIG_MAP_TILE_HEIGHT_INCHES = 24
 #    LOG_ERR = 3  # Fatal errors (these do NOT panic, however)
 
 CONFIG_PRINT_LOG_DEPTH = 0 # The deepest log we should still print
+                           # e.g. setting this to 2 will print 
+                           # ERR and WARN but not DEBUG or TRACE
 
-# TODO: Figure out what the robot's memory usage limitations are
-
-# These two variables exist to limit the size of the map.
-# The limits exist because internally we construct a large 2D array of `Tile`s to represent the map.
-# Computers have limited memory, so eventually it will OOM,
-# and these just exist to make sure we can safely exit before that happens
-CONFIG_CONST_MAX_WIDTH = 128
-CONFIG_CONST_MAX_HEIGHT = 128
-# https://github.com/cetio/VEXAPI 
-# Reverse engineering of Vex internals. In here it mentions the amount of memory for V5 controllers.
-# We are EXP, but perhaps we could try and test with V5's limits
-
-CONFIG_FONT = FontType.MONO12 # Please change CONFIG_FONT_ROWS and CONFIG_FONT_COLS according to the
+CONFIG_FONT = FontType.PROP60 # Please change CONFIG_FONT_ROWS and CONFIG_FONT_COLS according to the
                               # table listed in brain.screen.next_row()'s documentation file!
-CONFIG_FONT_ROWS = 9
-CONFIG_FONT_COLS = 26
-CONFIG_TURN_COST = 5 # Used in A*
+CONFIG_FONT_ROWS = 1
+CONFIG_FONT_COLS = 9
 
-# This is an array of arrays of (weight, x, y). We parse this one time at init to label the obstacles on our map.
-CONFIG_MAP_OBSTACLES = [
-    [CONST_WEIGHT_UNTRAVERESABLE, 3, 1],
-    [CONST_WEIGHT_UNTRAVERESABLE, 2, 6],
-    [CONST_WEIGHT_UNTRAVERESABLE, 3, 3],
-    [CONST_WEIGHT_UNTRAVERESABLE, 5, 2],
-]  # Houses A, B, C, and D respectively
+# --------------- LOCOMOTION ---------------
+CONFIG_BATCH_MOVES = True # This will make it so that instead of stopping 
+                          # after each "move", the robot will traverse in a
+                          # straight line and then turn afterwards  
+CONFIG_TURN_COST = 5 # Used in A*, tunable
+CONFIG_UNBATCHED_TURN_ERROR_MARGIN = 5 # How much difference until we turn?
 
-# This is an array of arrays of (name: str, audio_file: str, x, y)
-CONFIG_MAP_LOCATIONS = [
-    ["House A", "house_a.wav", 3, 1],
-    ["House B", "house_b.wav", 2, 6],
-    ["House C", "house_c.wav", 3, 3],
-    ["House D", "house_d.wav", 5, 2]
-]
+CONFIG_AUDIO_DIR = "" # only if the audio on the microSD is under some directory
+CONFIG_SOUND_VOL = 20 # Range 0-100
 
-CONFIG_SOUND_VOL = 50 # Range 0-100
+CONFIG_SPIN_LATENCY_MS = 5 # Spinning/waiting in a loop - how long should we wait each iteration?
 
 # TODO: more configs for robot/arm speed and whatnot as they come about
 
+CONFIG_ADJUSTMENT_INCHES = 6 # How many inches do we move when adjusting?
 
 #
 #
@@ -362,9 +409,13 @@ def play_audio(fname, blocking=True):
         raw_path = fname
 
     if brain.sdcard.exists(raw_path):
+        if brain.sound_is_active():
+            brain.sound_off()
+
         brain.play_file(raw_path, CONFIG_SOUND_VOL)
-        while brain.sound_is_active():
-            spin_wait()
+        if blocking:
+            while brain.sound_is_active():
+                spin_wait()
 
 def speak_number(num):
     def speak_word(word):
@@ -377,7 +428,7 @@ def speak_number(num):
              # The reason I changed it to this alongside the file names
              # is because the FAT filesystem was having trouble looking up
              # long file names (as expected), and using numbers instead of
-             # words removes this problem
+             # words removes this problem because filenames are shorter
         "",
         "1",
         "2",
@@ -442,19 +493,20 @@ def get_time_ms():
 
 def print_message(msg = ""):
     print(msg)
-    robot_render_pos()
     brain.screen.print(msg)
     brain.screen.next_row()
 
 def clear_console():
     brain.screen.clear_screen()
-    robot_render_pos()
 
-
-# This will terminate the program, it is UNSAFE to call from arbitrary points, and should only be invoked
-# from within `panic` unless something truly awful has happened and we cannot recover anything (unlikely)
-def halt_and_catch_fire():
-    brain.program_stop()
+# Returns the temperature of the battery if the robot is currently on fire.
+# Smoldering doesn't count. If the robot isn't on fire, the function returns some other value.
+def is_robot_on_fire():
+    temp = brain.battery.temperature(TemperatureUnits.CELSIUS)
+    if temp > 100:
+        return temp
+    
+    return 0.63739
 
 _PANIC_CALLBACKS = []
 def panic(reason):
@@ -473,8 +525,11 @@ def panic(reason):
             
         cb.fn()
 
-    halt_and_catch_fire()
+    brain.program_stop()
 
+def panic_manual():
+    play_audio("halt_manual_override.wav")
+    panic("Manual override")
 
 def panic_callback_register(cb):
     _PANIC_CALLBACKS.append(cb)
@@ -517,11 +572,12 @@ class Log:
         self.timestamp = get_time_ms()
 
     
-
 def log_event(log_type, message = ""):
     if log_type >= CONFIG_PRINT_LOG_DEPTH:
         print(LogType.name(log_type) + ": " + message)
-    _LOGS.append(Log(log_type, message))
+
+    if CONFIG_DEBUG:
+        _LOGS.append(Log(log_type, message))
 
 
 # A "Tile" structure, this has a weight, which we define with __slots__
@@ -541,12 +597,27 @@ class Tile:
     def cost(self):
         return self.weight
 
+def find_orient(cur, next_pos): # Get the orientation we have to face to go
+                         # from `cur` to `n`
+    if cur[0] == next_pos[0]: # X same, along Y axis
+        if next_pos[1] > cur[1]: # go up
+            return 0
+
+        return 180
+    elif cur[1] == next_pos[1]: # Y same, along X axis
+        if next_pos[1] > cur[1]: # go right
+            return 90
+                
+        return 270
+            
+    robo_assert(False, PanicReason.PANIC_PATH_INVALID, "path points are further than one apart")
+    return 0
 
 # A "GridMap" structure to represent all the Tiles of the map
 class GridMap:
     def __init__(self, width, height):
         robo_assert(
-            width <= CONFIG_CONST_MAX_WIDTH and height <= CONFIG_CONST_MAX_HEIGHT,
+            width <= CONST_MAX_WIDTH and height <= CONST_MAX_HEIGHT,
             PanicReason.PANIC_MAP_OOB,
             "map size exceeds hard limits",
         )
@@ -566,7 +637,7 @@ class GridMap:
         x, y = coord
         return self.tiles[y][x]
 
-    def neighbors(self, coord):
+    def neighbors(self, coord): # capture neighbors for this coordinate
         x, y = coord
         candidates = [
             (x + 1, y),  # eastern one
@@ -601,13 +672,14 @@ def print_grid(grid, path=None):
         print(row)
 
 
-
-_LOCATIONS = [] # List of Locations to add in the menu
+LOCATIONS = [] # List of Locations
 class Location:
-    def __init__(self, name, audio_file, coordinate):
+    def __init__(self, name, audio_file, coordinate, final_orient, final_len):
         self.name = name
         self.audio_file = audio_file
         self.coords = coordinate
+        self.final_orient = final_orient
+        self.final_len = final_len
 
     def speak(self):
         play_audio(self.audio_file)
@@ -618,110 +690,21 @@ def parse_locations():
         audio_file = location[1]
         x = location[2]
         y = location[3]
-        lclass = Location(name, audio_file, (x, y))    
-        _LOCATIONS.append(lclass)
-
-def menu_from_locations():
-    return Menu(_LOCATIONS)
-
-# Menu:
-#                          
-#      ┌───────────────┐   
-#      │Display Current│   
-#   ┌─▶│  Destination  │◀─┐
-#   │  └───────────────┘  │
-#   │          │          │
-#   │          │          │
-#   └───Prev───┼───Next───┘
-#              │           
-#            Select        
-#              │           
-#              │           
-#              ▼           
-#    ┌───────────────────┐ 
-#    │Travel to selection│ 
-#    └───────────────────┘ 
-
-class MenuState(FakeIntEnum):
-    MENU_DISPLAY = 0
-    MENU_SELECTED = 1
-
-class Menu:
-    def __init__(self, locations):
-        robo_assert(len(locations) > 0, PanicReason.PANIC_INTERNAL_INVARIANT, 
-                    "Menu must have at least one location")
-        self.locations = locations
-        self.current_location = locations[0]
-        self.current_location_index = 0
-        self.number_locations = len(locations)
-        self.state = MenuState.MENU_DISPLAY
-        self.data_changed = False 
-
-    def present(self):
-        if self.data_changed:
-            clear_console()
-        
-            brain.screen.set_cursor(3, 1)
-            brain.screen.print("Menu:")
-            brain.screen.next_row()
-            brain.screen.print("  < " + self.current_location.name + " >")
-            brain.screen.next_row()
-        
-            self.data_changed = False
-
-
-    # Internal. use scroll_right/left from the outside world
-    def _scroll(self, direction):
-        if direction:
-            advance = 1
-        else:
-            advance = -1
-        
-        self.current_location_index = ((self.current_location_index + advance)
-                                        % self.number_locations)
-        self.current_location = self.locations[self.current_location_index]
-        self.data_changed = True
-
-    def scroll_right(self):
-        self._scroll(True)
-    
-    def scroll_left(self):
-        self._scroll(False)
-    
-    def select(self):
-        self.state = MenuState.MENU_SELECTED
-
-    def enter(self, should_play_sound=True):
-        ROBOT.change_state(RobotState.ROBOT_IN_MENU)
-        log_event(LogType.LOG_TRACE, "Entering menu")
-        self.data_changed = True 
-        controller.buttonDown.pressed(self.scroll_left)
-        controller.buttonUp.pressed(self.scroll_right)
-        controller.buttonA.pressed(self.select)
-        controller.buttonB.pressed(self.select)
-        if should_play_sound:
-            play_audio("menu_enter.wav")
-
-        while self.state != MenuState.MENU_SELECTED:
-            self.present()
-            spin_wait()
-
-        self.state = MenuState.MENU_DISPLAY
-        play_audio("destination_set.wav")
-        play_audio(self.current_location.audio_file)
-        log_event(LogType.LOG_TRACE, "Destination set to " + self.current_location.name)
-        clear_console()
-        return self.current_location
-
+        final_orientation = location[4]
+        final_len = location[5]
+        lclass = Location(name, audio_file, (x, y), final_orientation, final_len)    
+        LOCATIONS.append(lclass)
 
 # No need to use __slots__ here, since these structures aren't as frequently
 # instantiated, and we might end up adding extra properties later on
 class Path:
-    def __init__(self, points):
+    def __init__(self, points, final_orient = 0, final_len = 0): 
         robo_assert(
             len(points) != 0, PanicReason.PANIC_PATH_INVALID, "path must have points"
         )
         self.points = points
+        self.final_orient = final_orient
+        self.final_len = final_len
 
     @property
     def start(self):
@@ -739,58 +722,66 @@ class Path:
 
 
 # ---------------------- ROBOT STATE MACHINE ----------------------
-#                         ┌───────────────┐                           
-#                         │               │                           
-#             ┌─INIT FAIL─│    STOPPED    │──INIT OK──┐               
-#             │           │               │           │               
-#             │           └───────────────┘           │               
-#             │                   ▲                   │               
-#             ▼                   │                   ▼               
-#   ┌───────────────────┐         │         ┌───────────────────┐     
-#   │                   │         │         │                   │     
-#   │    FAILED INIT    │         │         │    INITIALIZED    │     
-#   │                   │         │         │                   │     
-#   └───────────────────┘         │         └───────────────────┘     
-#             │                   │                   │               
-#             │                   │               ENTER MENU          
-#             └──RETURN BACK TO───┘                   ▼               
-#                                           ┌──────────────────┐      
-#                                           │                  │      
-#             ┌──RE-ENTER MENU──┬──────────▶│  SELECTION MENU  │◀─┐   
-#             │                 │           │                  │  │   
-#   ┌───────────────────┐       │           └──────────────────┘  │   
-#   │                   │       │                     │           │   
-#   │  DELIVER PACKAGE  │   PATH FAIL                 │           │   
-#   │                   │       │                     ├────STAY───┘   
-#   └───────────────────┘       │                     │               
-#             ▲                 │                     │               
-#             │          ┌────────────┐               │               
-#             │          │            │               │               
-#             └─PATH OK──│   TRAVEL   │◀───SELECTED───┘               
-#                        │            │                               
-#                        └────────────┘                               
-#                                                                     
-#                                                                     
-#                                ◎                                    
-#                                ╳                                    
-#                           STOP SIGNAL                               
-#                         (can arrive at                              
-#                            any time)                                
-#                                ╳                                    
-#                                ▼                                    
-#                        ┌───────────────┐                            
-#                        │               │                            
-#                        │    STOPPED    │                            
-#                        │               │                            
-#                        └───────────────┘                            
+#                         ┌───────────────┐                      
+#                         │               │                      
+#             ┌─INIT FAIL─│    STOPPED    │──INIT OK──┐          
+#             │           │               │           │          
+#             │           └───────────────┘           │          
+#             │                   ▲                   │          
+#             ▼                   │                   ▼          
+#   ┌───────────────────┐         │         ┌───────────────────┐
+#   │                   │         │         │                   │
+#   │    FAILED INIT    │         │         │    INITIALIZED    │
+#   │                   │         │         │                   │
+#   └───────────────────┘         │         └───────────────────┘
+#             │                   │                   │          
+#             │                   │               ENTER LOOP     
+#             └──RETURN BACK TO───┘                   ▼          
+#                                           ┌──────────────────┐ 
+#                                           │                  │ 
+#             ┌────PICK NEXT────┬──────────▶│   FIND TARGET    │ 
+#             │                 │           │                  │ 
+#   ┌───────────────────┐       │           └──────────────────┘ 
+#   │                   │       │                     │          
+#   │  DELIVER PACKAGE  │   PATH FAIL                 │          
+#   │                   │       │                     │          
+#   └───────────────────┘       │                     │          
+#             ▲                 │                     │          
+#             │          ┌────────────┐               │          
+#             │          │            │               │          
+#             └─PATH OK──│   TRAVEL   │◀───SELECTED───┤          
+#                        │            │               │          
+#                        └────────────┘               │          
+#                                                     │          
+#                                                     │          
+#                                ◎                    │          
+#                                ╳                    │          
+#                           STOP SIGNAL               │          
+#                         (can arrive at              │          
+#                            any time)                │          
+#                                ╳                    │          
+#                                ▼                    │          
+#                        ┌───────────────┐            │          
+#                        │               │            │          
+#                        │    STOPPED    │◀─WENT TO ALL          
+#                        │               │                       
+#                        └───────────────┘                       
 
 class RobotState(FakeIntEnum):
     ROBOT_FAILED_INIT = -1
     ROBOT_STOPPED = 0
     ROBOT_INITIALIZED = 1
-    ROBOT_IN_MENU = 2
+    ROBOT_SELECTING = 2
     ROBOT_TRAVELLING = 3
     ROBOT_DELIVERING = 4
+    ROBOT_ADJUSTING = 5
+    ROBOT_DELIVERED = 6
+
+class RobotAdjustment(FakeIntEnum):
+    ROBOT_LEFT = 1
+    ROBOT_RIGHT = 2
+    ROBOT_FORWARD = 3
+    ROBOT_BACKWARD = 4
 
 class Robot:
     def __init__(self, start):
@@ -806,8 +797,57 @@ class Robot:
         x1, y1 = self.position
         x2, y2 = target
         return abs(x1 - x2) + abs(y1 - y2) == 1
+    
+    def turn(self, new_orient):
+        orient = brain_inertial.heading(DEGREES)
+        delta = new_orient - orient
+        if not CONFIG_NOP_MOVES:
+            drivetrain.turn_for(RIGHT, delta)
+    
+    def move_by_tiles(self, tiles):
+        if not CONFIG_NOP_MOVES:
+            drivetrain.drive_for(FORWARD, tiles * CONFIG_MAP_TILE_SIDE_INCHES)
 
-    def follow_path(self, path):
+    def _follow_path_batched(self, path):
+        # In here, we'll want to follow a path until we are "on final approach".
+        # However, rather than scooting one by one, we'll first identify our
+        # starting orientation, and then traverse a whole line until we need 
+        # to turn, and continue to do the same until we reach our destination
+
+        def get_num_traversals_until_turn(coord_list, start_orient):
+            # In here, we find how long it takes until two elements' orientation
+            # in `path` doesn't match `orient`
+            index = 0
+            for coordinate in coord_list[:-1]:
+                cur = coordinate
+                next_pos = coord_list[index + 1]
+                next_orient = find_orient(cur, next_pos)
+                if next_orient != start_orient:
+                    return index, next_orient, False
+                
+                index += 1
+
+            return len(coord_list), start_orient, True
+        
+        initial_orient = find_orient(path.points[0], path.points[1]) # what is our initial orientation?
+        self.turn(initial_orient)
+
+        traversed_steps = 0
+        log_event(LogType.LOG_TRACE, "Path: %s" % (path.points))
+        next_orient = initial_orient
+        while True:
+            steps, next_orient, done = get_num_traversals_until_turn(path.points[traversed_steps:], 
+                                                          next_orient)
+            self.move_by_tiles(steps)
+            self.turn(next_orient)
+            log_event(LogType.LOG_TRACE, "Traversed %d steps in %f" % (steps, next_orient))
+            traversed_steps += steps
+            if done:
+                break
+        
+        self.position = path.points[-1]
+
+    def _follow_path_unbatched(self, path):
         robo_assert(
             path.start == self.position,
             PanicReason.PANIC_PATH_INVALID,
@@ -826,31 +866,84 @@ class Robot:
             self._move_to(next_coord)
 
     def _move_to(self, coord):
-        if CONFIG_DEBUG:
-            print_message("moving from %s to %s" % (self.position, coord))
-
-        # TODO: Drivetrain
+        orient = find_orient(self.position, coord)
+        if abs(brain_inertial.heading(DEGREES) - orient) > CONFIG_UNBATCHED_TURN_ERROR_MARGIN:
+            self.turn(orient) # turn only if over margin of error
+        
+        self.move_by_tiles(1)
         self.position = coord
-    
-    def deliver_package(self):
+
+    def follow_path(self, path):
+        if CONFIG_BATCH_MOVES:
+            self._follow_path_batched(path)
+        else:
+            self._follow_path_unbatched(path)
+
+        # Go "on final"
+        log_event(LogType.LOG_TRACE, "completed path traversal")
+        self.turn(path.final_orient)
+
+
+        if not CONFIG_NOP_MOVES: # TODO: distance sensor
+            drivetrain.drive_for(FORWARD, path.final_len)
+
+        # OK
+
+    # "overloaded" internal function to make an adjustment
+    def _adjust_internal(self, turn = None):
+        if CONFIG_NOP_MOVES:
+            return
+
+        if turn and turn != REVERSE:
+            drivetrain.turn_for(turn, 90)
+
+        if turn and turn == REVERSE:
+            drivetrain.drive_for(REVERSE, CONFIG_ADJUSTMENT_INCHES)
+        else:
+            drivetrain.drive_for(FORWARD, CONFIG_ADJUSTMENT_INCHES)
+
+        if turn and turn != REVERSE:
+            drivetrain.turn_for(turn, -90)
+
+    def _adjust_left(self):
+        self._adjust_internal(LEFT)
+        
+    def _adjust_right(self):
+        self._adjust_internal(RIGHT)
+
+    def _adjust_forward(self):
+        self._adjust_internal(None)
+
+    def _adjust_backward(self):
+        self._adjust_internal(REVERSE)
+
+    def adjust(self, adjustment):
+        if self.state != RobotState.ROBOT_ADJUSTING: # not adjusting
+            return
+        
+        adjustments = [self._adjust_left, self._adjust_right, 
+                       self._adjust_forward, self._adjust_backward]
+        adjustments[adjustment]()
+
+    def deliver_package(self, path):
         self.change_state(RobotState.ROBOT_DELIVERING)
-        pass # TODO
 
+        # TODO: delivery
 
-def reconstruct_path(came_from, current):
-    path = [current]
-    while current in came_from:
-        current = came_from[current]
-        path.append(current)
-    path.reverse()
-    return path
+        log_event(LogType.LOG_TRACE, "spinning back around")
+        self.turn(path.final_orient + 180)
+        if not CONFIG_NOP_MOVES:
+            drivetrain.drive_for(FORWARD, path.final_len)
+    
+    def shutdown(self): # trigger this on program halt. 
+                        # this should shutdown the robot,
+                        # and make sure that nothing
+                        # is left in a weird undefined state.
 
+                        # for example, an arm should be DOWN
 
-# manhattan distance as we restrict ourselves to horizontal and vertical
-def heuristic(a, b):
-    return abs(a[0] - b[0]) + abs(
-        a[1] - b[1]
-    )  # imagine having an algorithm named after your bad urban planning
+                        # TODO
+        pass
 
 
 def build_map_from_config():
@@ -880,17 +973,15 @@ def build_map_from_config():
 # However, we will preserve the use of A* in case we want to experiment with treating
 # smaller units as "tiles" (e.g. one virtual tile is not a physical tile on the ground)
 
-
 # This algorithm can also be unbiased to test different degrees of turn costs to time efficiency
 def astar_internal(
     grid,
     start,
     goal,
-    turn_cost = CONFIG_TURN_COST,
     start_dir = None,
 ):
     log_event(LogType.LOG_DEBUG, "astar_with_directions called: start=%s, goal=%s, start_dir=%s, turn_cost=%s" %
-              (start, goal, start_dir, turn_cost))
+              (start, goal, start_dir, CONFIG_TURN_COST))
 
     robo_assert(
         grid.in_bounds(start) and grid.in_bounds(goal),
@@ -922,6 +1013,18 @@ def astar_internal(
     def get_direction(a, b):
         return (b[0] - a[0], b[1] - a[1])
 
+    # manhattan distance as we restrict ourselves to horizontal and vertical
+    def manhattan_heuristic(a, b):
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def reconstruct_path(came_from, current):
+        path = [current]
+        while current in came_from:
+            current = came_from[current]
+            path.append(current)
+        path.reverse()
+        return path
+
     while open_heap:
         _, current = heapq.heappop(open_heap)
 
@@ -940,13 +1043,13 @@ def astar_internal(
             prev_dir = came_from_dir.get(current)
 
             if prev_dir is not None and move_dir != prev_dir:
-                tentative_g += turn_cost
+                tentative_g += CONFIG_TURN_COST
 
             if neighbor not in g_score or tentative_g < g_score[neighbor]:
                 came_from[neighbor] = current
                 came_from_dir[neighbor] = move_dir
                 g_score[neighbor] = tentative_g
-                f_score = tentative_g + heuristic(neighbor, goal)
+                f_score = tentative_g + manhattan_heuristic(neighbor, goal)
                 heapq.heappush(open_heap, (f_score, neighbor))
 
     if end_tile_changed:
@@ -954,101 +1057,36 @@ def astar_internal(
 
     return None
 
-def astar(grid, start, goal, turn_cost=CONFIG_TURN_COST, start_dir=None, tried_fallback=False):
-    path = astar_internal(grid, start, goal, turn_cost, start_dir)
+# This will return a path WITHOUT a final_orient/len, we must add it on on top
+def astar(grid, start, goal, turn_cost=CONFIG_TURN_COST):
+    path = astar_internal(grid, start, goal, turn_cost)
     
     if path is not None:
         return path
 
-    if not tried_fallback and turn_cost != 0:
-        log_event(LogType.LOG_WARN, "No path found with turn_cost=%s, retrying with turn_cost=0" % turn_cost)
-        return astar(grid, start, goal, turn_cost=0, start_dir=start_dir, tried_fallback=True)
+    log_event(LogType.LOG_WARN, "No path found with turn_cost=%d, retrying with turn_cost=0" % turn_cost)
+    return astar_internal(grid, start, goal, 0)
 
-    return None
+def generate_path_for_destination(target):
+    path = astar(GLOBAL_MAP, ROBOT.position, target.coords, CONFIG_TURN_COST)
 
+    path.final_orient = target.final_orient
+    path.final_len = target.final_len
+    return path
 
 GLOBAL_MAP = None
 ROBOT = None
-MENU = None
 
-def robot_render_pos(): # TODO: if someone can figure out how to use something "like" Rust async channels
-                        # within this environment, it would be really *really* nice to have a separate
-                        # render thread alongside the main one, and send render requests to the renderer. 
+def deliver_complete():
+    if ROBOT.state == RobotState.ROBOT_DELIVERING:
+        ROBOT.change_state(RobotState.ROBOT_DELIVERED)    
 
-                        # From my understanding, VexOS uses a cooperative scheduler (i.e. no preemption),
-                        # so this might not need mutexes/locks (and python wouldn't let me do that anyways
-                        # because we are in a barebones environment and thus cannot use atomics or handroll
-                        # atomics with inline assembly - maybe we could do this in C++)
+def deliver_a():
+    if ROBOT.state == RobotState.ROBOT_DELIVERING:
+        play_audio("adjusting.wav", blocking=False)
+        ROBOT.change_state(RobotState.ROBOT_ADJUSTING)
 
-                        # But yeah, I think having an SPSC queue of render requests to better abstract
-                        # over the display rendering mechanism would be *super* nice!!!
-
-    # We always want to make the robot's internal position visible
-    # on the screen. We'll render this at the top left of the display.
-
-    # If the cursor was previously occupying the location of the coordinates,
-    # then we move the cursor down to no longer overwrite our coordinates.
-
-    # Otherwise, we'll just move the cursor down one row since we won't be
-    # overwriting the coordinates we just wrote to the screen
-    row = brain.screen.row()
-    col = brain.screen.column()
-    brain.screen.set_cursor(1, 1)
-    x, y = ROBOT.position
-    brain.screen.print("(" + str(x) + ", " + str(y) + ")")
-
-    if row == 1:
-        brain.screen.next_row()
-    else:
-        brain.screen.set_cursor(row, col) # go back to where we were
-
-
-def menu_right_callback():
-    if ROBOT.state == RobotState.ROBOT_IN_MENU:
-        MENU.scroll_right()
-
-def menu_left_callback():
-    if ROBOT.state == RobotState.ROBOT_IN_MENU:
-        MENU.scroll_left()
-
-def travel_to(target):
-    global GLOBAL_MAP
-    path = astar(GLOBAL_MAP, ROBOT.position, target.coords,
-                CONFIG_TURN_COST, 0)
-        
-    if not path:
-        play_audio("alert_no_valid_path.wav")
-        return
-    
-    log_event(LogType.LOG_TRACE, "Following path")
-    ROBOT.follow_path(path)
-    ROBOT.deliver_package()
-    play_audio("complete.wav")
-
-    pass # TODO
-
-# THE BIG INIT - initialize in-software things BEFORE calibration 
-# (i.e. initialize things that don't need user input)
-def init():
-    parse_locations()
-    global GLOBAL_MAP, ROBOT, MENU
-    GLOBAL_MAP = build_map_from_config()
-    if CONFIG_DEBUG:
-        print_grid(GLOBAL_MAP)
-
-    ROBOT = Robot((0, 0))
-    MENU = menu_from_locations()
-    # Code init finished
-
-    brain.screen.set_font(CONFIG_FONT)
-    init_advance(InitStage.INIT_ROBOT)
-
-    if CONFIG_DEBUG:
-        play_audio("debug_mode.wav")
-    else:
-        play_audio("release_mode.wav")
-
-def calibrate():
+def calibrate_b():
     if ROBOT.state != RobotState.ROBOT_STOPPED:
         return
     
@@ -1057,25 +1095,121 @@ def calibrate():
     brain_inertial.calibrate()
     ROBOT.change_state(RobotState.ROBOT_INITIALIZED)
 
-def main():
-    init()
-    play_audio("on.wav")
+# .adjust will check this
+def adjust_up():
+    ROBOT.adjust(RobotAdjustment.ROBOT_FORWARD)
 
-    controller.buttonB.pressed(calibrate)
+def adjust_down():
+    ROBOT.adjust(RobotAdjustment.ROBOT_BACKWARD)
+
+def adjust_a():
+    ROBOT.adjust(RobotAdjustment.ROBOT_RIGHT)
+
+def adjust_b():
+    ROBOT.adjust(RobotAdjustment.ROBOT_LEFT)
+
+def robot_render_pos(): 
+    # We always want to make the robot's internal position visible
+    # on the screen. We'll render this at the top left of the display.
+
+    # If the cursor was previously occupying the location of the coordinates,
+    # then we move the cursor down to no longer overwrite our coordinates.
+
+    # Otherwise, we'll just move the cursor down one row since we won't be
+    # overwriting the coordinates we just wrote to the screen
+    while True:
+        row = brain.screen.row()
+        col = brain.screen.column()
+        brain.screen.set_cursor(1, 1)
+        x, y = ROBOT.position
+        brain.screen.print("(" + str(x) + ", " + str(y) + ")")
+        spin_wait()
+
+def travel_to(target):
+    global GLOBAL_MAP
+    path = generate_path_for_destination(target)
+        
+    if not path:
+        play_audio("alert_no_valid_path.wav")
+        return
+    
+    log_event(LogType.LOG_TRACE, "Following path")
+    play_audio("travelling_to.wav")
+    play_audio(target.audio_file)
+    ROBOT.follow_path(path)
+    ROBOT.deliver_package(path)
+    play_audio("complete.wav", blocking=False)
+
+    while ROBOT.state != RobotState.ROBOT_DELIVERED:
+        spin_wait()
+
+    play_audio("continuing.wav", blocking=False)
+
+    
+def get_next_location():
+    ROBOT.change_state(RobotState.ROBOT_SELECTING)
+    if len(LOCATIONS):
+        return LOCATIONS.pop(0)
+
+    return None
+
+def traverse_all():
+    next_place = get_next_location()
+    while next_place is not None:
+        travel_to(next_place)
+        next_place = get_next_location()
+
+# THE BIG INIT - initialize in-software things BEFORE calibration 
+# (i.e. initialize things that don't need user input)
+def init():
+    parse_locations()
+    global GLOBAL_MAP, ROBOT
+    GLOBAL_MAP = build_map_from_config()
+    if CONFIG_DEBUG:
+        print_grid(GLOBAL_MAP)
+
+    ROBOT = Robot((2, 2))
+    # Code init finished
+
+    controller.buttonDown.pressed(adjust_down)
+    controller.buttonUp.pressed(adjust_up)
+    controller.buttonA.pressed(adjust_a)
+    controller.buttonB.pressed(adjust_b)
+    controller.buttonA.pressed(deliver_a)
+    controller.buttonB.pressed(deliver_complete)
+    controller.buttonL1.pressed(deliver_complete)
+    controller.buttonL2.pressed(deliver_complete)
+    controller.buttonR1.pressed(deliver_complete)
+    controller.buttonR2.pressed(deliver_complete)
+    
+    brain.screen.set_font(CONFIG_FONT)
+
+    init_advance(InitStage.INIT_ROBOT)
+
+    if CONFIG_DEBUG:
+        log_event(LogType.LOG_DEBUG, "In debug mode")
+        play_audio("debug_mode.wav")
+    else:
+        play_audio("release_mode.wav")
+
+def main():
+    init()    
+    controller.buttonB.pressed(calibrate_b)
+
+    play_audio("on.wav", blocking=False)
 
     while ROBOT.state != RobotState.ROBOT_INITIALIZED:
         spin_wait()
 
-    play_audio("initialized.wav")
+    # Now that we are initialized, let's set up our panic handler
+    # for the robot shutdown... 
+    play_audio("initialized.wav", blocking=False)
     init_advance(InitStage.INIT_RUNNING)
-    first_run = True
 
-    while True:
-        target = MENU.enter(first_run)
-        first_run = False
-        # This is the main loop. In here we want to select a target, go there,
-        # select a target again, and continue on and on
-        travel_to(target)
+    Thread(robot_render_pos)
+    traverse_all()
+
+    brain.program_stop() # safe to invoke here
 
 if __name__ == "__main__":
     main()
