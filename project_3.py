@@ -8,10 +8,16 @@ brain = Brain()
 
 # Robot configuration code
 brain_inertial = Inertial()
-left_drive_smart = Motor(Ports.PORT6, False)
-right_drive_smart = Motor(Ports.PORT1, True)
-drivetrain = SmartDrive(left_drive_smart, right_drive_smart, brain_inertial, 319.19, 320, 40, MM, 1)
 controller = Controller()
+left_motor_a = Motor(Ports.PORT6, False)
+left_motor_b = Motor(Ports.PORT10, False)
+left_drive_smart = MotorGroup(left_motor_a, left_motor_b)
+right_motor_a = Motor(Ports.PORT1, True)
+right_motor_b = Motor(Ports.PORT5, True)
+right_drive_smart = MotorGroup(right_motor_a, right_motor_b)
+drivetrain = SmartDrive(left_drive_smart, right_drive_smart, brain_inertial, 319.19, 320, 40, MM, 1)
+distance_sensor = Distance(Ports.PORT3)
+belt_motor = Motor(Ports.PORT4, False)
 
 
 # Wait for sensor(s) to fully initialize
@@ -209,7 +215,8 @@ CONFIG_DEBUG = (
 )         # may come at the cost of slowing down the program due to the instrumentation
 
 # --------------- CUSTOM VARS ---------------
-CONFIG_DIST_TO_HOUSE_FROM_CORNER = 16 # inches
+CONFIG_DIST_TO_HOUSE_FROM_CORNER = 14 # inches
+CONFIG_DIST_SENSOR_AT_HOUSE = 10 # inches
 
 # --------------- MAP ---------------
 
@@ -247,7 +254,7 @@ CONFIG_MAP_OBSTACLES = [
 # and then we orient the robot to final_orientation, travel for final_traversal,
 # before turning back around to return to initial_x/y, and continuing
 
-# All final_orientations are ABSOLUTE, where 0.0 is NORTH
+# All final_orientations are ABSOLUTE, where 0.0 is NORTH relative to the WAREHOUSE
 CONFIG_MAP_LOCATIONS = [
     ["House A", "house_a.wav", 8, 8, 135, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
     ["House B", "house_b.wav", 4, 20, 45, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
@@ -258,8 +265,8 @@ CONFIG_MAP_LOCATIONS = [
 # --------------- ROUTE ---------------
 
 CONFIG_ROUTE = [ # A route from start to finish, all route locations MUST be in CONFIG_MAP_LOCATIONS
-    "House A",
     "House B",
+    "House A",
     "House C",
     "House D",
 ]
@@ -280,15 +287,9 @@ CONFIG_PRINT_LOG_DEPTH = 0 # The deepest log we should still print
                            # e.g. setting this to 2 will print 
                            # ERR and WARN but not DEBUG or TRACE
 
-CONFIG_FONT = FontType.PROP60 # Please change CONFIG_FONT_ROWS and CONFIG_FONT_COLS according to the
-                              # table listed in brain.screen.next_row()'s documentation file!
-CONFIG_FONT_ROWS = 1
-CONFIG_FONT_COLS = 9
+CONFIG_FONT = FontType.PROP20 
 
-# --------------- LOCOMOTION ---------------
-CONFIG_BATCH_MOVES = True # This will make it so that instead of stopping 
-                          # after each "move", the robot will traverse in a
-                          # straight line and then turn afterwards  
+# --------------- LOCOMOTION ---------------  
 CONFIG_TURN_COST = 5 # Used in A*, tunable
 CONFIG_TURN_ITERS = 2 # How many extra times after an initial turn do we check again?
 CONFIG_TURN_ERROR_MARGIN = 5 # How much difference until we turn?
@@ -298,12 +299,11 @@ CONFIG_SOUND_VOL = 50 # Range 0-100
 
 CONFIG_SPIN_LATENCY_MS = 5 # Spinning/waiting in a loop - how long should we wait each iteration?
 
-# TODO: more configs for robot/arm speed and whatnot as they come about
-
-CONFIG_ADJUSTMENT_INCHES = 6 # How many inches do we move when adjusting?
-CONFIG_ROBOT_DRIVE_VEL_PCT = 60
-CONFIG_ROBOT_TURN_VEL_PCT = 50
-CONFIG_ROBOT_FINAL_VEL_PCT = 20 # Final turn towards a location
+CONFIG_ADJUSTMENT_INCHES = 8 # How many inches do we move when adjusting?
+CONFIG_ROBOT_DRIVE_VEL_PCT = 40
+CONFIG_ROBOT_TURN_VEL_PCT = 40
+CONFIG_ROBOT_FINAL_VEL_PCT = 25 # Final turn towards a location
+CONFIG_DELIVER_MOTOR_SPIN_DEG = 90
 
 #
 #
@@ -846,27 +846,34 @@ class Robot:
         log_event(LogType.LOG_TRACE, "Turn completed")
         wait(50, MSEC)
     
-    def move_by_tiles(self, tiles):
+    def move_by_tiles(self, tiles, angle_to_maintain):
         if CONFIG_NOP_MOVES:
             return
 
-        heading_to_maintain = brain_inertial.heading(DEGREES)
         wheel_circumference = CONFIG_WHEEL_DIAMETER_IN * math.pi
         travelled_distance = tiles * CONFIG_MAP_TILE_SIDE_INCHES
 
         expected_rotations = travelled_distance / wheel_circumference
         expected_degree_change = 360 * expected_rotations
-                
-        starting_mpos = left_drive_smart.position(DEGREES)
-        expected_mpos = starting_mpos + expected_degree_change
 
-        drivetrain.drive(FORWARD)
-        # We can poll an arbitrary motor since they should be in sync
-        while left_drive_smart.position(DEGREES) < expected_mpos:
-            log_event(LogType.LOG_TRACE, "ldsmartpos = %d, expected = %d" % (left_drive_smart.position(DEGREES), expected_mpos) )
+        left_drive_smart.set_position(0, DEGREES)
+        right_drive_smart.set_position(0, DEGREES)
+
+        left_drive_smart.spin(FORWARD)
+        right_drive_smart.spin(FORWARD)
+
+        while (abs(left_drive_smart.position(DEGREES)) + abs(right_drive_smart.position(DEGREES))) / 2 < expected_degree_change:
+            current_angle = drivetrain.rotation(DEGREES)
+            correction = (angle_to_maintain - current_angle + 180) % 360 - 180
+
+            left_drive_smart.set_velocity(CONFIG_ROBOT_DRIVE_VEL_PCT + correction, PERCENT)
+            right_drive_smart.set_velocity(CONFIG_ROBOT_DRIVE_VEL_PCT - correction, PERCENT)
+            left_drive_smart.spin(FORWARD)
+            right_drive_smart.spin(FORWARD)
             spin_wait()
-        
-        drivetrain.stop()
+
+        left_drive_smart.stop()
+        right_drive_smart.stop()
         
         # done.
         
@@ -901,11 +908,12 @@ class Robot:
         log_event(LogType.LOG_TRACE, "Path: %s" % (path.points))
         next_orient = initial_orient
         while True:
+            old_orient = next_orient
             steps, next_orient, done = get_num_traversals_until_turn(path.points[traversed_steps:], 
                                                           next_orient)
 
             log_event(LogType.LOG_TRACE, "Moving %d tiles forward" % steps)
-            self.move_by_tiles(steps)
+            self.move_by_tiles(steps, old_orient)
             if not done:
                 self.turn(next_orient)
             log_event(LogType.LOG_TRACE, "Traversed %d steps in %f" % (steps, next_orient))
@@ -915,38 +923,10 @@ class Robot:
         
         self.position = path.points[-1]
 
-    def _follow_path_unbatched(self, path):
-        robo_assert(
-            path.start == self.position,
-            PanicReason.PANIC_PATH_INVALID,
-            "path start %s does not match robot position %s" % (path.start, self.position),
-        )
-
-        self.change_state(RobotState.ROBOT_TRAVELLING)
-
-        for next_coord in path.points[1:]:
-            robo_assert(
-                self.can_step_to(next_coord),
-                PanicReason.PANIC_PATH_INVALID,
-                "impossible move from %s to %s" % (self.position, next_coord),
-            )
-
-            self._move_to(next_coord)
-
-    def _move_to(self, coord):
-        orient = find_orient(self.position, coord)
-        if abs(brain_inertial.heading(DEGREES) - orient) > CONFIG_TURN_ERROR_MARGIN:
-            self.turn(orient) # turn only if over margin of error
-        
-        self.move_by_tiles(1)
-        self.position = coord
 
     def follow_path(self, path):
         log_event(LogType.LOG_TRACE, "starting path traversal")
-        if CONFIG_BATCH_MOVES:
-            self._follow_path_batched(path)
-        else:
-            self._follow_path_unbatched(path)
+        self._follow_path_batched(path)
 
         # Go "on final"
         log_event(LogType.LOG_TRACE, "completed path traversal")
@@ -954,7 +934,10 @@ class Robot:
 
         if not CONFIG_NOP_MOVES:
             drivetrain.set_drive_velocity(CONFIG_ROBOT_FINAL_VEL_PCT, PERCENT)
-            drivetrain.drive_for(FORWARD, path.final_len)
+
+            while distance_sensor.object_distance(INCHES) > CONFIG_DIST_SENSOR_AT_HOUSE:
+                drivetrain.drive_for(FORWARD, 1) # scoot an inch
+                
             drivetrain.set_drive_velocity(CONFIG_ROBOT_DRIVE_VEL_PCT, PERCENT)
 
         # OK
@@ -993,17 +976,17 @@ class Robot:
         
         adjustments = [self._adjust_left, self._adjust_right, 
                        self._adjust_forward, self._adjust_backward]
-        adjustments[adjustment]()
+        adjustments[adjustment - 1]()
 
     def deliver_package(self, path):
         self.change_state(RobotState.ROBOT_DELIVERING)
 
-        # TODO: delivery
+        belt_motor.spin_for(FORWARD, CONFIG_DELIVER_MOTOR_SPIN_DEG)
 
         log_event(LogType.LOG_TRACE, "spinning back around")
-        self.turn(path.final_orient + 180)
         if not CONFIG_NOP_MOVES:
-            drivetrain.drive_for(FORWARD, path.final_len)
+            drivetrain.drive_for(REVERSE, path.final_len)
+            self.turn(0)
     
     def shutdown(self): # trigger this on program halt. 
                         # this should shutdown the robot,
@@ -1151,6 +1134,10 @@ def deliver_complete():
     if ROBOT.state == RobotState.ROBOT_DELIVERING:
         ROBOT.change_state(RobotState.ROBOT_DELIVERED)    
 
+def deliver_adj_complete():
+    if ROBOT.state == RobotState.ROBOT_ADJUSTING:
+        ROBOT.change_state(RobotState.ROBOT_DELIVERED)    
+
 def deliver_a():
     if ROBOT.state == RobotState.ROBOT_DELIVERING:
         play_audio("adjusting.wav", blocking=False)
@@ -1194,7 +1181,8 @@ def robot_render_pos():
         x, y = ROBOT.position
         deg = brain_inertial.heading(DEGREES)
         dgstr = "%.2f" % deg
-        brain.screen.print("(" + str(x) + ", " + str(y) + ") " + dgstr)
+        dstr = "%.1f" % (distance_sensor.object_distance(INCHES))
+        brain.screen.print("(" + str(x) + ", " + str(y) + ") " + dgstr + " " +  dstr)
         spin_wait()
 
 def travel_to(target):
@@ -1249,10 +1237,10 @@ def init():
     controller.buttonB.pressed(adjust_b)
     controller.buttonA.pressed(deliver_a)
     controller.buttonB.pressed(deliver_complete)
-    controller.buttonL1.pressed(deliver_complete)
-    controller.buttonL2.pressed(deliver_complete)
-    controller.buttonR1.pressed(deliver_complete)
-    controller.buttonR2.pressed(deliver_complete)
+    controller.buttonL1.pressed(deliver_adj_complete)
+    controller.buttonL2.pressed(deliver_adj_complete)
+    controller.buttonR1.pressed(deliver_adj_complete)
+    controller.buttonR2.pressed(deliver_adj_complete)
     
     brain.screen.set_font(CONFIG_FONT)
 
