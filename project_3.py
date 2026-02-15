@@ -8,8 +8,8 @@ brain = Brain()
 
 # Robot configuration code
 brain_inertial = Inertial()
-left_drive_smart = Motor(Ports.PORT4, False)
-right_drive_smart = Motor(Ports.PORT9, True)
+left_drive_smart = Motor(Ports.PORT6, False)
+right_drive_smart = Motor(Ports.PORT1, True)
 drivetrain = SmartDrive(left_drive_smart, right_drive_smart, brain_inertial, 319.19, 320, 40, MM, 1)
 controller = Controller()
 
@@ -209,19 +209,19 @@ CONFIG_DEBUG = (
 )         # may come at the cost of slowing down the program due to the instrumentation
 
 # --------------- CUSTOM VARS ---------------
-CONFIG_DIST_TO_HOUSE_FROM_CORNER = 18 # inches
+CONFIG_DIST_TO_HOUSE_FROM_CORNER = 16 # inches
 
 # --------------- MAP ---------------
 
 CONFIG_MAP_WIDTH = 24 # Map width in "tiles".
 CONFIG_MAP_HEIGHT = 24  # Map height in "tiles".
-CONFIG_NOP_MOVES = True # Whether or not moves should be signaled to the robot.
+CONFIG_NOP_MOVES = False # Whether or not moves should be signaled to the robot.
                         # Useful if testing robot without motors. NOTE: please
                         # remember to refactor drivetrain commands into 
                         # a wrapper function to avoid scattering checks of this everywhere!
 
 CONFIG_MAP_TILE_SIDE_INCHES = 6
-
+CONFIG_WHEEL_DIAMETER_IN = 4
 # This is an array of arrays of (weight, x, y). We parse this one time at init to label the obstacles on our map.
 CONFIG_MAP_OBSTACLES = [
     [CONST_WEIGHT_UNTRAVERESABLE, 11, 5],
@@ -266,7 +266,7 @@ CONFIG_ROUTE = [ # A route from start to finish, all route locations MUST be in 
 
 # --------------- ROBOT INIT STATE ---------------
 
-CONFIG_ROBOT_START_POS = (2, 2) # Tuple to indicate software-perceived start pos
+CONFIG_ROBOT_START_POS = (6, 2) # Tuple to indicate software-perceived start pos
 CONFIG_ROBOT_START_ORIENTATION = 0.0 # direction robot is facing at start,
                                      # "0.0" is "north"
 
@@ -290,16 +290,20 @@ CONFIG_BATCH_MOVES = True # This will make it so that instead of stopping
                           # after each "move", the robot will traverse in a
                           # straight line and then turn afterwards  
 CONFIG_TURN_COST = 5 # Used in A*, tunable
-CONFIG_UNBATCHED_TURN_ERROR_MARGIN = 5 # How much difference until we turn?
+CONFIG_TURN_ITERS = 2 # How many extra times after an initial turn do we check again?
+CONFIG_TURN_ERROR_MARGIN = 5 # How much difference until we turn?
 
 CONFIG_AUDIO_DIR = "" # only if the audio on the microSD is under some directory
-CONFIG_SOUND_VOL = 20 # Range 0-100
+CONFIG_SOUND_VOL = 50 # Range 0-100
 
 CONFIG_SPIN_LATENCY_MS = 5 # Spinning/waiting in a loop - how long should we wait each iteration?
 
 # TODO: more configs for robot/arm speed and whatnot as they come about
 
 CONFIG_ADJUSTMENT_INCHES = 6 # How many inches do we move when adjusting?
+CONFIG_ROBOT_DRIVE_VEL_PCT = 60
+CONFIG_ROBOT_TURN_VEL_PCT = 50
+CONFIG_ROBOT_FINAL_VEL_PCT = 20 # Final turn towards a location
 
 #
 #
@@ -334,10 +338,40 @@ class heapq:
 
     def heappush(self, item):
         self.data.append(item)
-        self.data.sort(key=lambda x: x[0])
+        self._siftup(len(self.data) - 1)
 
     def heappop(self):
-        return self.data.pop(0)
+        if len(self.data) == 0:
+            panic("pop from empty heap")
+        if len(self.data) == 1:
+            return self.data.pop()
+        root = self.data[0]
+        self.data[0] = self.data.pop()
+        self._siftdown(0)
+        return root
+
+    def _siftup(self, idx):
+        parent = (idx - 1) // 2
+        while idx > 0 and self.data[idx][0] < self.data[parent][0]:
+            self.data[idx], self.data[parent] = self.data[parent], self.data[idx]
+            idx = parent
+            parent = (idx - 1) // 2
+
+    def _siftdown(self, idx):
+        n = len(self.data)
+        while True:
+            left = 2 * idx + 1
+            right = 2 * idx + 2
+            smallest = idx
+
+            if left < n and self.data[left][0] < self.data[smallest][0]:
+                smallest = left
+            if right < n and self.data[right][0] < self.data[smallest][0]:
+                smallest = right
+            if smallest == idx:
+                break
+            self.data[idx], self.data[smallest] = self.data[smallest], self.data[idx]
+            idx = smallest
 
     def __bool__(self):
         return len(self.data) > 0
@@ -597,19 +631,16 @@ class Tile:
     def cost(self):
         return self.weight
 
-def find_orient(cur, next_pos): # Get the orientation we have to face to go
-                         # from `cur` to `n`
-    if cur[0] == next_pos[0]: # X same, along Y axis
-        if next_pos[1] > cur[1]: # go up
+def find_orient(cur, next_pos):
+    if cur[0] == next_pos[0]:
+        if next_pos[1] > cur[1]:
             return 0
-
         return 180
-    elif cur[1] == next_pos[1]: # Y same, along X axis
-        if next_pos[1] > cur[1]: # go right
+    if cur[1] == next_pos[1]:
+        if next_pos[0] > cur[0]:
             return 90
-                
         return 270
-            
+
     robo_assert(False, PanicReason.PANIC_PATH_INVALID, "path points are further than one apart")
     return 0
 
@@ -680,9 +711,6 @@ class Location:
         self.coords = coordinate
         self.final_orient = final_orient
         self.final_len = final_len
-
-    def speak(self):
-        play_audio(self.audio_file)
 
 def parse_locations():
     for location in CONFIG_MAP_LOCATIONS:
@@ -799,14 +827,50 @@ class Robot:
         return abs(x1 - x2) + abs(y1 - y2) == 1
     
     def turn(self, new_orient):
-        orient = brain_inertial.heading(DEGREES)
-        delta = new_orient - orient
-        if not CONFIG_NOP_MOVES:
-            drivetrain.turn_for(RIGHT, delta)
+        log_event(LogType.LOG_TRACE, "Turn to %f" % new_orient)
+
+        def angle_delta(target, current):
+            return ((target - current + 180) % 360) - 180
+
+        for i in range(0, CONFIG_TURN_ITERS):
+            orient = brain_inertial.heading(DEGREES)
+            delta = angle_delta(new_orient, orient)
+
+            log_event(LogType.LOG_DEBUG, "orient = %f, new_orient = %f, delta = %f" % (orient, new_orient, delta))
+            if abs(delta) < CONFIG_TURN_ERROR_MARGIN:
+                break
+            
+            if not CONFIG_NOP_MOVES:
+                drivetrain.turn_for(RIGHT, delta)
+        
+        log_event(LogType.LOG_TRACE, "Turn completed")
+        wait(50, MSEC)
     
     def move_by_tiles(self, tiles):
-        if not CONFIG_NOP_MOVES:
-            drivetrain.drive_for(FORWARD, tiles * CONFIG_MAP_TILE_SIDE_INCHES)
+        if CONFIG_NOP_MOVES:
+            return
+
+        heading_to_maintain = brain_inertial.heading(DEGREES)
+        wheel_circumference = CONFIG_WHEEL_DIAMETER_IN * math.pi
+        travelled_distance = tiles * CONFIG_MAP_TILE_SIDE_INCHES
+
+        expected_rotations = travelled_distance / wheel_circumference
+        expected_degree_change = 360 * expected_rotations
+                
+        starting_mpos = left_drive_smart.position(DEGREES)
+        expected_mpos = starting_mpos + expected_degree_change
+
+        drivetrain.drive(FORWARD)
+        # We can poll an arbitrary motor since they should be in sync
+        while left_drive_smart.position(DEGREES) < expected_mpos:
+            log_event(LogType.LOG_TRACE, "ldsmartpos = %d, expected = %d" % (left_drive_smart.position(DEGREES), expected_mpos) )
+            spin_wait()
+        
+        drivetrain.stop()
+        
+        # done.
+        
+        
 
     def _follow_path_batched(self, path):
         # In here, we'll want to follow a path until we are "on final approach".
@@ -829,6 +893,7 @@ class Robot:
 
             return len(coord_list), start_orient, True
         
+        log_event(LogType.LOG_DEBUG, "First point is %s, second is %s" % (path.points[0], path.points[1]))
         initial_orient = find_orient(path.points[0], path.points[1]) # what is our initial orientation?
         self.turn(initial_orient)
 
@@ -838,8 +903,11 @@ class Robot:
         while True:
             steps, next_orient, done = get_num_traversals_until_turn(path.points[traversed_steps:], 
                                                           next_orient)
+
+            log_event(LogType.LOG_TRACE, "Moving %d tiles forward" % steps)
             self.move_by_tiles(steps)
-            self.turn(next_orient)
+            if not done:
+                self.turn(next_orient)
             log_event(LogType.LOG_TRACE, "Traversed %d steps in %f" % (steps, next_orient))
             traversed_steps += steps
             if done:
@@ -867,13 +935,14 @@ class Robot:
 
     def _move_to(self, coord):
         orient = find_orient(self.position, coord)
-        if abs(brain_inertial.heading(DEGREES) - orient) > CONFIG_UNBATCHED_TURN_ERROR_MARGIN:
+        if abs(brain_inertial.heading(DEGREES) - orient) > CONFIG_TURN_ERROR_MARGIN:
             self.turn(orient) # turn only if over margin of error
         
         self.move_by_tiles(1)
         self.position = coord
 
     def follow_path(self, path):
+        log_event(LogType.LOG_TRACE, "starting path traversal")
         if CONFIG_BATCH_MOVES:
             self._follow_path_batched(path)
         else:
@@ -883,9 +952,10 @@ class Robot:
         log_event(LogType.LOG_TRACE, "completed path traversal")
         self.turn(path.final_orient)
 
-
-        if not CONFIG_NOP_MOVES: # TODO: distance sensor
+        if not CONFIG_NOP_MOVES:
+            drivetrain.set_drive_velocity(CONFIG_ROBOT_FINAL_VEL_PCT, PERCENT)
             drivetrain.drive_for(FORWARD, path.final_len)
+            drivetrain.set_drive_velocity(CONFIG_ROBOT_DRIVE_VEL_PCT, PERCENT)
 
         # OK
 
@@ -1058,17 +1128,17 @@ def astar_internal(
     return None
 
 # This will return a path WITHOUT a final_orient/len, we must add it on on top
-def astar(grid, start, goal, turn_cost=CONFIG_TURN_COST):
-    path = astar_internal(grid, start, goal, turn_cost)
+def astar(grid, start, goal):
+    path = astar_internal(grid, start, goal)
     
     if path is not None:
         return path
 
-    log_event(LogType.LOG_WARN, "No path found with turn_cost=%d, retrying with turn_cost=0" % turn_cost)
-    return astar_internal(grid, start, goal, 0)
+    log_event(LogType.LOG_WARN, "No path found with turn_cost=%d, retrying with turn_cost=0" % CONFIG_TURN_COST)
+    return astar_internal(grid, start, goal)
 
 def generate_path_for_destination(target):
-    path = astar(GLOBAL_MAP, ROBOT.position, target.coords, CONFIG_TURN_COST)
+    path = astar(GLOBAL_MAP, ROBOT.position, target.coords)
 
     path.final_orient = target.final_orient
     path.final_len = target.final_len
@@ -1122,7 +1192,9 @@ def robot_render_pos():
         col = brain.screen.column()
         brain.screen.set_cursor(1, 1)
         x, y = ROBOT.position
-        brain.screen.print("(" + str(x) + ", " + str(y) + ")")
+        deg = brain_inertial.heading(DEGREES)
+        dgstr = "%.2f" % deg
+        brain.screen.print("(" + str(x) + ", " + str(y) + ") " + dgstr)
         spin_wait()
 
 def travel_to(target):
@@ -1168,7 +1240,7 @@ def init():
     if CONFIG_DEBUG:
         print_grid(GLOBAL_MAP)
 
-    ROBOT = Robot((2, 2))
+    ROBOT = Robot(CONFIG_ROBOT_START_POS)
     # Code init finished
 
     controller.buttonDown.pressed(adjust_down)
@@ -1186,11 +1258,11 @@ def init():
 
     init_advance(InitStage.INIT_ROBOT)
 
-    if CONFIG_DEBUG:
-        log_event(LogType.LOG_DEBUG, "In debug mode")
-        play_audio("debug_mode.wav")
-    else:
-        play_audio("release_mode.wav")
+    #if CONFIG_DEBUG:
+    #    log_event(LogType.LOG_DEBUG, "In debug mode")
+    #    play_audio("debug_mode.wav")
+    #else:
+    #    play_audio("release_mode.wav")
 
 def main():
     init()    
@@ -1201,8 +1273,8 @@ def main():
     while ROBOT.state != RobotState.ROBOT_INITIALIZED:
         spin_wait()
 
-    # Now that we are initialized, let's set up our panic handler
-    # for the robot shutdown... 
+    drivetrain.set_turn_velocity(CONFIG_ROBOT_TURN_VEL_PCT, PERCENT)
+    drivetrain.set_drive_velocity(CONFIG_ROBOT_DRIVE_VEL_PCT, PERCENT)
     play_audio("initialized.wav", blocking=False)
     init_advance(InitStage.INIT_RUNNING)
 
