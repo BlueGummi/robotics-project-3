@@ -262,20 +262,16 @@ CONFIG_MAP_OBSTACLES = [
 # before turning back around to return to initial_x/y, and continuing
 
 # All final_orientations are ABSOLUTE, where 0.0 is NORTH relative to the WAREHOUSE
-CONFIG_MAP_LOCATIONS = [
+CONFIG_WAREHOUSE = ["Warehouse", "warehouse.wav", 2, 2, 180, 0]
+CONFIG_ROUTE = [
     ["House A", "house_a.wav", 8, 8, 135, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
+    CONFIG_WAREHOUSE,
     ["House B", "house_b.wav", 4, 20, 45, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
+    CONFIG_WAREHOUSE,
     ["House C", "house_c.wav", 16, 16, 225, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
-    ["House D", "house_d.wav", 20, 12, 135, CONFIG_DIST_TO_HOUSE_FROM_CORNER]
-]
-
-# --------------- ROUTE ---------------
-
-CONFIG_ROUTE = [ # A route from start to finish, all route locations MUST be in CONFIG_MAP_LOCATIONS
-    "House B",
-    "House A",
-    "House C",
-    "House D",
+    CONFIG_WAREHOUSE,
+    ["House D", "house_d.wav", 20, 12, 135, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
+    CONFIG_WAREHOUSE,
 ]
 
 # --------------- ROBOT INIT STATE ---------------
@@ -719,7 +715,7 @@ class Location:
         self.final_len = final_len
 
 def parse_locations():
-    for location in CONFIG_MAP_LOCATIONS:
+    for location in CONFIG_ROUTE:
         name = location[0]
         audio_file = location[1]
         x = location[2]
