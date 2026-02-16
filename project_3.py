@@ -225,16 +225,14 @@ CONFIG_DEBUG = (
 
 # --------------- CUSTOM VARS ---------------
 CONFIG_DIST_TO_HOUSE_FROM_CORNER = 14 # inches
-CONFIG_DIST_SENSOR_AT_HOUSE = 10 # inches
+CONFIG_DIST_SENSOR_AT_HOUSE = 9 # inches
 
 # --------------- MAP ---------------
 
 CONFIG_MAP_WIDTH = 24 # Map width in "tiles".
 CONFIG_MAP_HEIGHT = 24  # Map height in "tiles".
 CONFIG_NOP_MOVES = False # Whether or not moves should be signaled to the robot.
-                        # Useful if testing robot without motors. NOTE: please
-                        # remember to refactor drivetrain commands into 
-                        # a wrapper function to avoid scattering checks of this everywhere!
+                        # Useful if testing robot without motors.
 
 CONFIG_MAP_TILE_SIDE_INCHES = 6
 CONFIG_WHEEL_DIAMETER_IN = 4
@@ -300,7 +298,7 @@ CONFIG_FONT = FontType.PROP20
 
 # --------------- LOCOMOTION ---------------  
 CONFIG_TURN_COST = 5 # Used in A*, tunable
-CONFIG_TURN_ITERS = 2 # How many extra times after an initial turn do we check again?
+CONFIG_TURN_ITERS = 3 # How many extra times after an initial turn do we check again?
 CONFIG_TURN_ERROR_MARGIN = 5 # How much difference until we turn?
 
 CONFIG_AUDIO_DIR = "" # only if the audio on the microSD is under some directory
@@ -308,9 +306,9 @@ CONFIG_SOUND_VOL = 50 # Range 0-100
 
 CONFIG_SPIN_LATENCY_MS = 5 # Spinning/waiting in a loop - how long should we wait each iteration?
 
-CONFIG_ADJUSTMENT_INCHES = 8 # How many inches do we move when adjusting?
-CONFIG_ROBOT_DRIVE_VEL_PCT = 40
-CONFIG_ROBOT_TURN_VEL_PCT = 40
+CONFIG_ADJUSTMENT_INCHES = 6 # How many inches do we move when adjusting?
+CONFIG_ROBOT_DRIVE_VEL_PCT = 30
+CONFIG_ROBOT_TURN_VEL_PCT = 25
 CONFIG_ROBOT_FINAL_VEL_PCT = 25 # Final turn towards a location
 CONFIG_DELIVER_MOTOR_SPIN_DEG = 90
 
@@ -458,7 +456,7 @@ def play_audio(fname, blocking=True):
         brain.play_file(raw_path, CONFIG_SOUND_VOL)
         if blocking:
             while brain.sound_is_active():
-                spin_wait()
+                pass # We cannot wait because this activates in panic_manual, and that should not keep moving
 
 def speak_number(num):
     def speak_word(word):
@@ -568,11 +566,10 @@ def panic(reason):
             
         cb.fn()
 
-    brain.program_stop()
 
 def panic_manual():
     play_audio("halt_manual_override.wav")
-    panic("Manual override")
+    brain.program_stop()
 
 def panic_callback_register(cb):
     _PANIC_CALLBACKS.append(cb)
@@ -1135,9 +1132,6 @@ def generate_path_for_destination(target):
 GLOBAL_MAP = None
 ROBOT = None
 
-def emergency_stop():
-    brain.program_stop()
-
 def deliver_complete():
     if ROBOT.state == RobotState.ROBOT_DELIVERING:
         ROBOT.change_state(RobotState.ROBOT_DELIVERED)    
@@ -1249,8 +1243,8 @@ def init():
     controller.buttonL2.pressed(deliver_adj_complete)
     controller.buttonR1.pressed(deliver_adj_complete)
     controller.buttonR2.pressed(deliver_adj_complete)
-    controller.buttonR3.pressed(emergency_stop)
-    controller.buttonL3.pressed(emergency_stop)
+    controller.buttonR3.pressed(panic_manual)
+    controller.buttonL3.pressed(panic_manual)
 
     brain.screen.set_font(CONFIG_FONT)
 
