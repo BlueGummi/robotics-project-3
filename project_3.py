@@ -124,7 +124,16 @@ calibrate_drivetrain()
 # Printing to the console is done through `print_message`. All `log_` functionality is purely for the logging system
 #
 # CODE STYLE
-# TODO: write this once you're closer to complete with the codebase
+# CONFIG_* variables are global configuration variables
+# All classes should be in PascalCase, all functions and local variables in snake_case
+# All global internal variables should be _UNDERSCORE_PREFIXED_SCREAMING_SNAKE_CASE
+# All global non-internal variables should be SCREAMING_SNAKE_CASE
+# All "enums" should inherit FakeIntEnum. FakeIntEnum is used as follows:
+# 
+# class MyEnum(FakeIntEnum):
+#     MEMBER = 0
+#
+# And to get a string name of a member, MyEnum.name(data) should be invoked
 #
 # REST OF DOCS
 #
@@ -142,10 +151,12 @@ calibrate_drivetrain()
 # |
 # |
 # |
-# 0 ---------------- +x
+# 0 warehouse ---------------- +x
 #
 # The bottom left is the origin, and it increases in the X direction going right, and the Y direction going up.
 #
+# 
+# 
 # NOTE: Gridlines are formed along the lines of tiles, NOT their centers. This means that the walls adjacent to
 # the origin are the X and Y axes.
 #
@@ -181,8 +192,6 @@ calibrate_drivetrain()
 #
 #
 #
-
-# TODO: Figure out what the robot's memory usage limitations are
 
 # These two variables exist to limit the size of the map.
 # The limits exist because internally we construct a large 2D array of `Tile`s to represent the map.
@@ -862,6 +871,7 @@ class Robot:
         left_drive_smart.spin(FORWARD)
         right_drive_smart.spin(FORWARD)
 
+        # Inspired by team Cyber Sharks
         while (abs(left_drive_smart.position(DEGREES)) + abs(right_drive_smart.position(DEGREES))) / 2 < expected_degree_change:
             current_angle = drivetrain.rotation(DEGREES)
             correction = (angle_to_maintain - current_angle + 180) % 360 - 180
@@ -988,14 +998,8 @@ class Robot:
             drivetrain.drive_for(REVERSE, path.final_len)
             self.turn(0)
     
-    def shutdown(self): # trigger this on program halt. 
-                        # this should shutdown the robot,
-                        # and make sure that nothing
-                        # is left in a weird undefined state.
-
-                        # for example, an arm should be DOWN
-
-                        # TODO
+    def shutdown(self):
+        # We used to have an arm lower here, but not anymore
         pass
 
 
@@ -1032,6 +1036,7 @@ def astar_internal(
     start,
     goal,
     start_dir = None,
+    negate_turn_cost = False,
 ):
     log_event(LogType.LOG_DEBUG, "astar_with_directions called: start=%s, goal=%s, start_dir=%s, turn_cost=%s" %
               (start, goal, start_dir, CONFIG_TURN_COST))
@@ -1095,7 +1100,7 @@ def astar_internal(
             move_dir = get_direction(current, neighbor)
             prev_dir = came_from_dir.get(current)
 
-            if prev_dir is not None and move_dir != prev_dir:
+            if prev_dir is not None and move_dir != prev_dir and not negate_turn_cost:
                 tentative_g += CONFIG_TURN_COST
 
             if neighbor not in g_score or tentative_g < g_score[neighbor]:
@@ -1118,7 +1123,7 @@ def astar(grid, start, goal):
         return path
 
     log_event(LogType.LOG_WARN, "No path found with turn_cost=%d, retrying with turn_cost=0" % CONFIG_TURN_COST)
-    return astar_internal(grid, start, goal)
+    return astar_internal(grid, start, goal, start_dir = None, negate_turn_cost = True)
 
 def generate_path_for_destination(target):
     path = astar(GLOBAL_MAP, ROBOT.position, target.coords)
@@ -1129,6 +1134,9 @@ def generate_path_for_destination(target):
 
 GLOBAL_MAP = None
 ROBOT = None
+
+def emergency_stop():
+    brain.program_stop()
 
 def deliver_complete():
     if ROBOT.state == RobotState.ROBOT_DELIVERING:
@@ -1241,7 +1249,9 @@ def init():
     controller.buttonL2.pressed(deliver_adj_complete)
     controller.buttonR1.pressed(deliver_adj_complete)
     controller.buttonR2.pressed(deliver_adj_complete)
-    
+    controller.buttonR3.pressed(emergency_stop)
+    controller.buttonL3.pressed(emergency_stop)
+
     brain.screen.set_font(CONFIG_FONT)
 
     init_advance(InitStage.INIT_ROBOT)
