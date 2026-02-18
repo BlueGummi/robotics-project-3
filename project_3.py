@@ -220,8 +220,8 @@ CONST_WEIGHT_UNTRAVERESABLE = -1
 # --------------- DEBUG/RELEASE ---------------
 
 CONFIG_DEBUG = (
-    True  # Defines if we are in a debug build. More logging functionality will be enabled if we are, but this
-)         # may come at the cost of slowing down the program due to the instrumentation
+    False  # Defines if we are in a debug build. More logging functionality will be enabled if we are, but this
+)          # may come at the cost of slowing down the program due to the instrumentation
 
 # --------------- CUSTOM VARS ---------------
 CONFIG_DIST_TO_HOUSE_FROM_CORNER = 14 # inches
@@ -258,18 +258,18 @@ CONFIG_MAP_OBSTACLES = [
 # initial_y: int, final_orientation: float, final_traversal: float]
 
 # When we traverse locations, we first traverse with A* to the initial_x/y,
-# and then we orient the robot to final_orientation, travel for final_traversal,
-# before turning back around to return to initial_x/y, and continuing
+# and then we orient the robot to final_orientation, travel until we 
+# are close enough to the house, before turning back around to return to initial_x/y, 
+# and continuing. We then use final_traversal when we turn back around to reset 
+# the robot to the corner of the tile that we had set.
 
 # All final_orientations are ABSOLUTE, where 0.0 is NORTH relative to the WAREHOUSE
 CONFIG_WAREHOUSE = ["Warehouse", "warehouse.wav", 2, 2, 180, 0]
 CONFIG_ROUTE = [
     ["House A", "house_a.wav", 8, 8, 135, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
-    CONFIG_WAREHOUSE,
     ["House B", "house_b.wav", 4, 20, 45, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
     CONFIG_WAREHOUSE,
     ["House C", "house_c.wav", 16, 16, 225, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
-    CONFIG_WAREHOUSE,
     ["House D", "house_d.wav", 20, 12, 135, CONFIG_DIST_TO_HOUSE_FROM_CORNER],
     CONFIG_WAREHOUSE,
 ]
@@ -295,17 +295,17 @@ CONFIG_FONT = FontType.PROP20
 # --------------- LOCOMOTION ---------------  
 CONFIG_TURN_COST = 5 # Used in A*, tunable
 CONFIG_TURN_ITERS = 3 # How many extra times after an initial turn do we check again?
-CONFIG_TURN_ERROR_MARGIN = 5 # How much difference until we turn?
+CONFIG_TURN_ERROR_MARGIN = 2 # How much difference until we turn?
 
 CONFIG_AUDIO_DIR = "" # only if the audio on the microSD is under some directory
-CONFIG_SOUND_VOL = 50 # Range 0-100
+CONFIG_SOUND_VOL = 100 # Range 0-100
 
 CONFIG_SPIN_LATENCY_MS = 5 # Spinning/waiting in a loop - how long should we wait each iteration?
 
 CONFIG_ADJUSTMENT_INCHES = 6 # How many inches do we move when adjusting?
 CONFIG_ROBOT_DRIVE_VEL_PCT = 30
-CONFIG_ROBOT_TURN_VEL_PCT = 25
-CONFIG_ROBOT_FINAL_VEL_PCT = 25 # Final turn towards a location
+CONFIG_ROBOT_TURN_VEL_PCT = 50
+CONFIG_ROBOT_FINAL_VEL_PCT = 30 # Final turn towards a location
 CONFIG_DELIVER_MOTOR_SPIN_DEG = 90
 
 #
@@ -452,7 +452,7 @@ def play_audio(fname, blocking=True):
         brain.play_file(raw_path, CONFIG_SOUND_VOL)
         if blocking:
             while brain.sound_is_active():
-                pass # We cannot wait because this activates in panic_manual, and that should not keep moving
+                spin_wait()
 
 def speak_number(num):
     def speak_word(word):
@@ -564,7 +564,6 @@ def panic(reason):
 
 
 def panic_manual():
-    play_audio("halt_manual_override.wav")
     brain.program_stop()
 
 def panic_callback_register(cb):
@@ -1145,8 +1144,8 @@ def calibrate_b():
     if ROBOT.state != RobotState.ROBOT_STOPPED:
         return
     
-    brain_inertial.set_heading(0, DEGREES)
-    brain_inertial.set_rotation(0, DEGREES)
+    brain_inertial.set_heading(CONFIG_ROBOT_START_ORIENTATION, DEGREES)
+    brain_inertial.set_rotation(CONFIG_ROBOT_START_ORIENTATION, DEGREES)
     brain_inertial.calibrate()
     ROBOT.change_state(RobotState.ROBOT_INITIALIZED)
 
@@ -1178,8 +1177,8 @@ def robot_render_pos():
         brain.screen.set_cursor(1, 1)
         x, y = ROBOT.position
         deg = brain_inertial.heading(DEGREES)
-        dgstr = "%.2f" % deg
-        dstr = "%.1f" % (distance_sensor.object_distance(INCHES))
+        dgstr = "%.0fd" % deg
+        dstr = "%.0f" % (distance_sensor.object_distance(INCHES))
         brain.screen.print("(" + str(x) + ", " + str(y) + ") " + dgstr + " " +  dstr)
         spin_wait()
 
@@ -1189,6 +1188,7 @@ def travel_to(target):
         
     if not path:
         play_audio("alert_no_valid_path.wav")
+        panic("No path found")
         return
     
     log_event(LogType.LOG_TRACE, "Following path")
