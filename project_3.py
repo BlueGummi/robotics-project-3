@@ -173,7 +173,7 @@ calibrate_drivetrain()
 #
 # CONTROL NOTES:
 # 
-# Vex is weird and doesn't allow us to unregister a callback (???), thus, we model a state machine of the robot, and 
+# Vex is weird and doesn't allow us to unregister a callback, thus, we model a state machine of the robot, and 
 # we make a callback for the functionality of all relevant buttons at each state, and inside the callback we check if 
 # the expected state matches the current state and only operate if they do match. 
 #
@@ -318,8 +318,9 @@ CONFIG_DELIVER_MOTOR_SPIN_DEG = 90
 #
 #
 #
-# Good luck!
-# Remember: "Science isn't about WHY. It's about WHY NOT."
+
+# "You are always working on a group project. Whether it be with other people,
+# or with 'past you', 'current you', and 'future you', you are in a group project."
 
 #
 #
@@ -390,7 +391,7 @@ class heapq:
 class InitStage(FakeIntEnum):
     INIT_CODE = 0  # Default init stage, only code is being set up
     INIT_ROBOT = 1  # Initializing the robot to a known state
-    INIT_RUNNING = 2  # All systems go! (hopefully)
+    INIT_RUNNING = 2  # All systems go!
 
 class PanicPhase(FakeIntEnum):
     PANIC_STOP_MOTION = 10  # Stop anything that might be running constantly
@@ -454,6 +455,9 @@ def play_audio(fname, blocking=True):
             while brain.sound_is_active():
                 spin_wait()
 
+# NOTE: -- UNUSED FUNCTION -- This was originally intended to be used
+# in debugging, as the robot could "speak" its position on the map,
+# among other data. 
 def speak_number(num):
     def speak_word(word):
         play_audio("num_" + word + ".wav")
@@ -704,7 +708,7 @@ def print_grid(grid, path=None):
         print(row)
 
 
-LOCATIONS = [] # List of Locations
+ROUTE = [] # List of Locations from CONFIG_ROUTE
 class Location:
     def __init__(self, name, audio_file, coordinate, final_orient, final_len):
         self.name = name
@@ -722,7 +726,7 @@ def parse_locations():
         final_orientation = location[4]
         final_len = location[5]
         lclass = Location(name, audio_file, (x, y), final_orientation, final_len)    
-        LOCATIONS.append(lclass)
+        ROUTE.append(lclass)
 
 # No need to use __slots__ here, since these structures aren't as frequently
 # instantiated, and we might end up adding extra properties later on
@@ -772,7 +776,7 @@ class Path:
 #             │                 │           │                  │ 
 #   ┌───────────────────┐       │           └──────────────────┘ 
 #   │                   │       │                     │          
-#   │  DELIVER PACKAGE  │   PATH FAIL                 │          
+#   │  DELIVER/ADJUST   │   PATH FAIL                 │          
 #   │                   │       │                     │          
 #   └───────────────────┘       │                     │          
 #             ▲                 │                     │          
@@ -792,9 +796,12 @@ class Path:
 #                                ▼                    │          
 #                        ┌───────────────┐            │          
 #                        │               │            │          
-#                        │    STOPPED    │◀─WENT TO ALL          
-#                        │               │                       
-#                        └───────────────┘                       
+#                        │    STOPPED    │◀─WENT TO ALL (note, the program simply       
+#                        │               │               exits here, the state
+#                        └───────────────┘               does not explicity change
+#                                                        to STOPPED. This was the case
+#                                                        in earlier versions)
+# 
 
 class RobotState(FakeIntEnum):
     ROBOT_FAILED_INIT = -1
@@ -1028,7 +1035,7 @@ def astar_internal(
     start,
     goal,
     start_dir = None,
-    negate_turn_cost = False,
+    ignore_turn_cost = False,
 ):
     log_event(LogType.LOG_DEBUG, "astar_with_directions called: start=%s, goal=%s, start_dir=%s, turn_cost=%s" %
               (start, goal, start_dir, CONFIG_TURN_COST))
@@ -1092,7 +1099,7 @@ def astar_internal(
             move_dir = get_direction(current, neighbor)
             prev_dir = came_from_dir.get(current)
 
-            if prev_dir is not None and move_dir != prev_dir and not negate_turn_cost:
+            if prev_dir is not None and move_dir != prev_dir and not ignore_turn_cost:
                 tentative_g += CONFIG_TURN_COST
 
             if neighbor not in g_score or tentative_g < g_score[neighbor]:
@@ -1115,16 +1122,16 @@ def astar(grid, start, goal):
         return path
 
     log_event(LogType.LOG_WARN, "No path found with turn_cost=%d, retrying with turn_cost=0" % CONFIG_TURN_COST)
-    return astar_internal(grid, start, goal, start_dir = None, negate_turn_cost = True)
+    return astar_internal(grid, start, goal, start_dir = None, ignore_turn_cost = True)
 
 def generate_path_for_destination(target):
-    path = astar(GLOBAL_MAP, ROBOT.position, target.coords)
+    path = astar(MAP, ROBOT.position, target.coords)
 
     path.final_orient = target.final_orient
     path.final_len = target.final_len
     return path
 
-GLOBAL_MAP = None
+MAP = None
 ROBOT = None
 
 def deliver_complete():
@@ -1183,12 +1190,11 @@ def robot_render_pos():
         spin_wait()
 
 def travel_to(target):
-    global GLOBAL_MAP
+    global MAP
     path = generate_path_for_destination(target)
         
     if not path:
         play_audio("alert_no_valid_path.wav")
-        panic("No path found")
         return
     
     log_event(LogType.LOG_TRACE, "Following path")
@@ -1206,8 +1212,8 @@ def travel_to(target):
     
 def get_next_location():
     ROBOT.change_state(RobotState.ROBOT_SELECTING)
-    if len(LOCATIONS):
-        return LOCATIONS.pop(0)
+    if len(ROUTE):
+        return ROUTE.pop(0)
 
     return None
 
@@ -1221,10 +1227,10 @@ def traverse_all():
 # (i.e. initialize things that don't need user input)
 def init():
     parse_locations()
-    global GLOBAL_MAP, ROBOT
-    GLOBAL_MAP = build_map_from_config()
+    global MAP, ROBOT
+    MAP = build_map_from_config()
     if CONFIG_DEBUG:
-        print_grid(GLOBAL_MAP)
+        print_grid(MAP)
 
     ROBOT = Robot(CONFIG_ROBOT_START_POS)
     # Code init finished
@@ -1245,12 +1251,6 @@ def init():
     brain.screen.set_font(CONFIG_FONT)
 
     init_advance(InitStage.INIT_ROBOT)
-
-    #if CONFIG_DEBUG:
-    #    log_event(LogType.LOG_DEBUG, "In debug mode")
-    #    play_audio("debug_mode.wav")
-    #else:
-    #    play_audio("release_mode.wav")
 
 def main():
     init()    
